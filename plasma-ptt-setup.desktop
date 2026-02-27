@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Push-to-Talk Setup
+Comment=Configure mouse button for PTT Daemon
+Exec=plasma-ptt.py --setup
+Icon=audio-input-microphone
+Terminal=true
+Categories=Settings;HardwareSettings;
