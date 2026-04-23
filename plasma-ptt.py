@@ -20,10 +20,13 @@ import os
 import subprocess
 import signal
 import socket
+import select
 from pathlib import Path
 import evdev
 
-from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
+from PyQt6.QtWidgets import (QApplication, QSystemTrayIcon, QMenu, QDialog, 
+                             QVBoxLayout, QLabel, QComboBox, QPushButton, 
+                             QDialogButtonBox, QMessageBox)
 from PyQt6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor
 from PyQt6.QtCore import QThread, pyqtSignal, QTimer, QSocketNotifier
 
@@ -40,69 +43,158 @@ def load_config():
             pass
     return None
 
-def run_setup():
-    """Terminal-based setup for selecting the input device."""
-    print("\n--- PTT Initial Setup ---")
-    by_id_dir = Path('/dev/input/by-id/')
-    
-    if not by_id_dir.exists():
-        print("Error: /dev/input/by-id/ not found.")
-        sys.exit(1)
+class EvdevCaptureThread(QThread):
+    captured = pyqtSignal(int)
+    error = pyqtSignal(str)
 
-    devices = []
-    permission_errors = 0
-    
-    for path in by_id_dir.iterdir():
-        # Skip directories if any exist here
-        if not path.is_file() and not path.is_symlink():
-            continue
+    def __init__(self, device_path):
+        super().__init__()
+        self.device_path = device_path
+        self._running = True
+
+    def stop(self):
+        self._running = False
+
+    def run(self):
+        try:
+            device = evdev.InputDevice(self.device_path)
+            while self._running:
+                r, w, x = select.select([device.fd], [], [], 0.5)
+                if r:
+                    for event in device.read():
+                        if event.type == evdev.ecodes.EV_KEY and event.value == 1:
+                            self.captured.emit(event.code)
+                            return
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class SetupDialog(QDialog):
+    def __init__(self, current_config=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Plasma PTT Setup")
+        self.setMinimumWidth(350)
+        
+        self.current_config = current_config or {}
+        self.selected_path = self.current_config.get('device_path', None)
+        self.button_code = self.current_config.get('button_code', None)
+        
+        self.capture_thread = None
+        
+        layout = QVBoxLayout(self)
+        
+        # Device Selection
+        layout.addWidget(QLabel("Select Input Device:"))
+        self.device_combo = QComboBox()
+        self.populate_devices()
+        self.device_combo.currentIndexChanged.connect(self.on_device_changed)
+        layout.addWidget(self.device_combo)
+        
+        # Capture Section
+        layout.addWidget(QLabel("Push-to-Talk Button:"))
+        self.code_label = QLabel(f"<b>{self.button_code if self.button_code else 'None'}</b>")
+        layout.addWidget(self.code_label)
+        
+        self.capture_btn = QPushButton("Capture Button")
+        self.capture_btn.clicked.connect(self.toggle_capture)
+        layout.addWidget(self.capture_btn)
+        
+        # Dialog Buttons
+        self.button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        self.button_box.accepted.connect(self.save_and_accept)
+        self.button_box.rejected.connect(self.reject)
+        layout.addWidget(self.button_box)
+        
+    def populate_devices(self):
+        by_id_dir = Path('/dev/input/by-id/')
+        if not by_id_dir.exists():
+            return
+            
+        index_to_select = -1
+        
+        for path in by_id_dir.iterdir():
+            if not path.is_file() and not path.is_symlink():
+                continue
+                
+            try:
+                dev = evdev.InputDevice(str(path))
+                self.device_combo.addItem(dev.name, str(path))
+                if str(path) == self.selected_path:
+                    index_to_select = self.device_combo.count() - 1
+            except PermissionError:
+                continue
+            except Exception:
+                continue
+                
+        if index_to_select >= 0:
+            self.device_combo.setCurrentIndex(index_to_select)
+        elif self.device_combo.count() > 0:
+            self.selected_path = self.device_combo.itemData(0)
+
+    def on_device_changed(self, index):
+        if index >= 0:
+            self.selected_path = self.device_combo.itemData(index)
+
+    def toggle_capture(self):
+        if self.capture_thread:
+            self.reset_capture_ui()
+            return
+
+        if not self.selected_path:
+            return
+            
+        self.capture_btn.setText("Cancel Capture")
+        self.capture_btn.setEnabled(True)
+        self.device_combo.setEnabled(False)
+        self.button_box.setEnabled(False)
+        
+        self.capture_thread = EvdevCaptureThread(self.selected_path)
+        self.capture_thread.captured.connect(self.on_captured)
+        self.capture_thread.error.connect(self.on_capture_error)
+        self.capture_thread.start()
+
+    def on_captured(self, code):
+        self.button_code = code
+        self.code_label.setText(f"<b>{code}</b>")
+        self.reset_capture_ui()
+
+    def on_capture_error(self, err_msg):
+        QMessageBox.warning(self, "Capture Error", f"Failed to capture: {err_msg}")
+        self.reset_capture_ui()
+
+    def reset_capture_ui(self):
+        if self.capture_thread:
+            self.capture_thread.stop()
+            self.capture_thread.wait()
+            self.capture_thread = None
+            
+        self.capture_btn.setText("Capture Button")
+        self.capture_btn.setEnabled(True)
+        self.device_combo.setEnabled(True)
+        self.button_box.setEnabled(True)
+
+    def save_and_accept(self):
+        if not self.selected_path or not self.button_code:
+            QMessageBox.warning(self, "Incomplete Configuration", "Please select a device and capture a button.")
+            return
             
         try:
-            dev = evdev.InputDevice(str(path))
-            devices.append((str(path), dev.name))
-        except PermissionError:
-            permission_errors += 1
-            continue  # Skip this specific device and keep checking others
-        except Exception:
-            continue
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            config_data = {'device_path': self.selected_path, 'button_code': self.button_code}
+            with open(CONFIG_FILE, 'w') as f:
+                json.dump(config_data, f, indent=4)
+                
+            self.current_config = config_data
+            self.accept()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not save config: {e}")
 
-    if not devices:
-        if permission_errors > 0:
-            print("\nPermission denied: Could not read any devices.")
-            print("Troubleshooting:")
-            print("1. Verify you are in the input group: 'groups $USER'")
-            print("2. You MUST log out of Plasma completely and log back in for group changes to take effect.")
-        else:
-            print("\nNo input devices found.")
-        sys.exit(1)
+    def closeEvent(self, event):
+        if self.capture_thread:
+            self.capture_thread.stop()
+            self.capture_thread.wait()
+        super().closeEvent(event)
 
-    for i, (path, name) in enumerate(devices):
-        print(f"[{i}] {name}")
-
-    while True:
-        try:
-            choice = int(input("\nSelect the device number: "))
-            if 0 <= choice < len(devices):
-                selected_path = devices[choice][0]
-                selected_dev = evdev.InputDevice(selected_path)
-                break
-        except ValueError:
-            pass
-
-    print(f"\n>>> PRESS THE BUTTON ON '{selected_dev.name}' TO USE FOR PTT <<<")
-    target_button = None
-    for event in selected_dev.read_loop():
-        if event.type == evdev.ecodes.EV_KEY and event.value == 1:
-            target_button = event.code
-            break
-
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    config_data = {'device_path': selected_path, 'button_code': target_button}
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(config_data, f, indent=4)
-        
-    print("Configuration saved! Starting system tray app...\n")
-    return config_data
 
 # --- background thread for mouse input ---
 class EvdevThread(QThread):
@@ -113,25 +205,32 @@ class EvdevThread(QThread):
         super().__init__()
         self.device_path = device_path
         self.target_button = target_button
+        self._running = True
+
+    def stop(self):
+        self._running = False
 
     def run(self):
         try:
             device = evdev.InputDevice(self.device_path)
-            for event in device.read_loop():
-                if event.type == evdev.ecodes.EV_KEY and event.code == self.target_button:
-                    if event.value == 1:
-                        self.pressed.emit()
-                    elif event.value == 0:
-                        self.released.emit()
+            while self._running:
+                r, w, x = select.select([device.fd], [], [], 0.5)
+                if r:
+                    for event in device.read():
+                        if event.type == evdev.ecodes.EV_KEY and event.code == self.target_button:
+                            if event.value == 1:
+                                self.pressed.emit()
+                            elif event.value == 0:
+                                self.released.emit()
         except Exception as e:
             print(f"Input device disconnected or error: {e}")
-            sys.exit(1)
+
 
 # --- main application ---
 class PTTApp:
-    def __init__(self, config):
-        self.app = QApplication(sys.argv)
-        self.app.setQuitOnLastWindowClosed(False)
+    def __init__(self, app, config):
+        self.app = app
+        self.config = config
 
         self.ptt_enabled = True
         self.is_transmitting = False
@@ -152,6 +251,12 @@ class PTTApp:
         
         self.menu.addSeparator()
 
+        self.setup_action = QAction("Setup")
+        self.setup_action.triggered.connect(self.open_setup)
+        self.menu.addAction(self.setup_action)
+
+        self.menu.addSeparator()
+
         self.quit_action = QAction("Quit")
         self.quit_action.triggered.connect(self.quit_app)
         self.menu.addAction(self.quit_action)
@@ -159,18 +264,16 @@ class PTTApp:
         self.tray_icon.setContextMenu(self.menu)
 
         # Start input listener thread
-        self.evdev_thread = EvdevThread(config['device_path'], config['button_code'])
-        self.evdev_thread.pressed.connect(self.on_press)
-        self.evdev_thread.released.connect(self.on_release)
-        self.evdev_thread.start()
+        self.evdev_thread = None
+        self.start_evdev_thread()
 
         # Initialize to muted state
         self.set_mic_mute('1')
 
         # Allow Python to catch Ctrl+C / Systemd Signals by yielding execution briefly
-        timer = QTimer()
-        timer.timeout.connect(lambda: None)
-        timer.start(500)
+        self.timer = QTimer()
+        self.timer.timeout.connect(lambda: None)
+        self.timer.start(500)
 
         # Create a socket pair to bridge OS signals and Qt's event loop
         self.sig_fd_r, self.sig_fd_w = socket.socketpair()
@@ -186,6 +289,34 @@ class PTTApp:
         # Tell Qt to listen to the read end of the socket and wake up instantly
         self.notifier = QSocketNotifier(self.sig_fd_r.fileno(), QSocketNotifier.Type.Read)
         self.notifier.activated.connect(self.handle_signal_wakeup)
+
+    def start_evdev_thread(self):
+        if not self.config or 'device_path' not in self.config or 'button_code' not in self.config:
+            return
+            
+        self.evdev_thread = EvdevThread(self.config['device_path'], self.config['button_code'])
+        self.evdev_thread.pressed.connect(self.on_press)
+        self.evdev_thread.released.connect(self.on_release)
+        self.evdev_thread.start()
+
+    def stop_evdev_thread(self):
+        if self.evdev_thread:
+            self.evdev_thread.stop()
+            self.evdev_thread.wait()
+            self.evdev_thread = None
+
+    def open_setup(self):
+        self.stop_evdev_thread()
+
+        dialog = SetupDialog(self.config)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.config = dialog.current_config
+
+        if self.config and Path(self.config.get('device_path', '')).exists():
+            self.start_evdev_thread()
+        else:
+            print("No valid config found after setup, exiting...")
+            self.quit_app()
 
     def create_icon(self, color_name):
         """Draws a simple colored circle on the fly."""
@@ -305,24 +436,38 @@ class PTTApp:
     def quit_app(self):
         print("Cleaning up and exiting...")
         self.set_mic_mute('0') # Unmute on exit
+        self.stop_evdev_thread()
         self.app.quit()
-        sys.exit(0)
 
-    def run(self):
-        sys.exit(self.app.exec())
 
 if __name__ == '__main__':
     # Handle termination signals cleanly
     signal.signal(signal.SIGINT, signal.SIG_DFL)
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
+    app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
+
     config = load_config()
     
-    # Check if we passed the --setup flag from the desktop shortcut
-    if len(sys.argv) > 1 and sys.argv[1] == '--setup':
-        config = run_setup()
-    elif not config or not Path(config.get('device_path', '')).exists():
-        config = run_setup()
+    setup_requested = (len(sys.argv) > 1 and sys.argv[1] == '--setup')
+    needs_setup = not config or not Path(config.get('device_path', '')).exists()
 
-    app = PTTApp(config)
-    app.run()
+    if setup_requested or needs_setup:
+        dialog = SetupDialog(config)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            config = dialog.current_config
+            if setup_requested:
+                sys.exit(0)
+        else:
+            if needs_setup:
+                print("Setup cancelled and no valid config exists. Exiting.")
+                sys.exit(0)
+            if setup_requested:
+                sys.exit(0)
+
+    if not config or not Path(config.get('device_path', '')).exists():
+        sys.exit(1)
+
+    ptt_app = PTTApp(app, config)
+    sys.exit(app.exec())

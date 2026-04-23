@@ -27,13 +27,12 @@ Note: The installer adds your user to the input group so the script can read mou
 
 ⚙️ Configuration
 
-The installer will automatically prompt you to select your mouse and press the button you want to map to Push-to-Talk.
+The installer will automatically launch a GUI configuration dialog prompting you to select your device and press the button you want to map to Push-to-Talk.
 
-If you ever change your mouse or want to remap the button, you can rerun the configuration prompt without using the terminal:
+If you ever change your mouse or want to remap the button, you can rerun the configuration prompt at any time:
 
-    Open your application launcher (e.g., Plasma Kickoff).
-    Search for Push-to-Talk Setup and launch it.
-    Follow the on-screen prompts.
+* Right-click the microphone system tray icon and select **Setup**.
+* OR, open your application launcher (e.g., Plasma Kickoff), search for **Push-to-Talk Setup** and launch it.
 
 ⌨️ Setting Up a Global Toggle Shortcut
 
