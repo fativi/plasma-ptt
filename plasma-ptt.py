@@ -27,8 +27,8 @@ import evdev
 from PyQt6.QtWidgets import (QApplication, QSystemTrayIcon, QMenu, QDialog, 
                              QVBoxLayout, QLabel, QComboBox, QPushButton, 
                              QDialogButtonBox, QMessageBox)
-from PyQt6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor
-from PyQt6.QtCore import QThread, pyqtSignal, QTimer, QSocketNotifier
+from PyQt6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor, QPen
+from PyQt6.QtCore import QThread, pyqtSignal, QTimer, QSocketNotifier, Qt
 
 # --- CONFIGURATION PATHS ---
 CONFIG_DIR = Path(os.getenv('XDG_CONFIG_HOME', Path.home() / '.config')) / 'plasma-ptt'
@@ -319,14 +319,51 @@ class PTTApp:
             self.quit_app()
 
     def create_icon(self, color_name):
-        """Draws a simple colored circle on the fly."""
+        """Draws a microphone icon on the fly."""
         pixmap = QPixmap(64, 64)
         pixmap.fill(QColor("transparent"))
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setBrush(QColor(color_name))
-        painter.setPen(QColor("transparent"))
-        painter.drawEllipse(4, 4, 56, 56)
+        
+        color = QColor(color_name)
+        pen = QPen(color)
+        pen.setWidth(4)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        
+        # Draw mic capsule
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(color)
+        painter.drawRoundedRect(24, 8, 16, 26, 8, 8)
+        
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(pen)
+        
+        # Draw U shape stand
+        painter.drawLine(16, 26, 16, 34)
+        painter.drawLine(48, 26, 48, 34)
+        painter.drawArc(16, 18, 32, 32, 180 * 16, 180 * 16)
+        
+        # Draw base
+        painter.drawLine(32, 50, 32, 58)
+        painter.drawLine(20, 58, 44, 58)
+        
+        # Add a slash for muted state
+        if color_name == "crimson":
+            # Create a transparent cutout behind the slash to improve legibility
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+            clear_pen = QPen(Qt.GlobalColor.transparent)
+            clear_pen.setWidth(8)
+            clear_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(clear_pen)
+            painter.drawLine(12, 12, 52, 52)
+            
+            # Draw the actual slash
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+            pen.setWidth(4)
+            painter.setPen(pen)
+            painter.drawLine(12, 12, 52, 52)
+            
         painter.end()
         return QIcon(pixmap)
 
