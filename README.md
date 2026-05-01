@@ -14,7 +14,7 @@ Instead of relying on window focus or Wayland-restricted keyloggers, this tool r
 
 ## 📦 Installation
 
-Clone the repository and run the included installation script. The script automatically detects your package manager (Arch/pacman, Debian/apt, or Fedora/dnf) to install the necessary Python dependencies.
+ttttt the repository and run the included installation script. The script automatically detects your package manager (Arch/pacman, Debian/apt, or Fedora/dnf) to install the necessary Python dependencies.
 
 ```bash
 git clone https://github.com/fativi/plasma-ptt.git
