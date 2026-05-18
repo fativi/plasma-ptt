@@ -15,7 +15,7 @@ Requires:       python3-pyqt6
 Plasma Push-to-Talk (PTT) is a lightweight background daemon that intercepts raw hardware events directly from /dev/input/ to provide flawless, system-wide microphone muting and unmuting without relying on window focus or Wayland-restricted keyloggers.
 
 %prep
-%autosetup
+%autosetup -n plasma-ptt
 
 %build
 # Nothing to build natively
@@ -36,6 +36,8 @@ echo "systemctl --user enable --now plasma-ptt.service"
 %files
 /usr/bin/plasma-ptt
 /usr/lib/systemd/user/plasma-ptt.service
+/usr/share/applications/plasma-ptt.desktop
+/usr/share/plasma-ptt/sounds/
 
 %changelog
 * Mon May 18 2026 Brian <fativi@github.com> - 1.0-1
