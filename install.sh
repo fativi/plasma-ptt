@@ -3,7 +3,7 @@
 echo "=== Plasma Push-to-Talk Installer ==="
 
 # 1. Verify files exist in the current directory
-for file in plasma-ptt.py plasma-ptt.service plasma-ptt-setup.desktop; do
+for file in plasma-ptt.py plasma-ptt.service; do
     if [ ! -f "$file" ]; then
         echo "Error: $file not found in the current directory."
         exit 1
@@ -53,27 +53,14 @@ cp plasma-ptt.py ~/.local/bin/
 chmod +x ~/.local/bin/plasma-ptt.py
 
 cp plasma-ptt.service ~/.config/systemd/user/
-cp plasma-ptt-setup.desktop ~/.local/share/applications/
+cp plasma-ptt.desktop ~/.local/share/applications/
 
 # Update the desktop database so the DE sees the new app launcher immediately
 update-desktop-database ~/.local/share/applications/ 2>/dev/null || true
 
-# 5. Generate default PTT chirps if missing and ffmpeg is available
-echo "-> Checking for PTT audio chirps..."
-SOUND_DIR=~/.config/plasma-ptt/sounds
-if command -v ffmpeg &> /dev/null; then
-    if [ ! -f "$SOUND_DIR/ptt_open.wav" ]; then
-        echo "   Generating default ptt_open.wav..."
-        ffmpeg -f lavfi -i "sine=frequency=1000:duration=0.1" "$SOUND_DIR/ptt_open.wav" -loglevel quiet
-    fi
-    if [ ! -f "$SOUND_DIR/ptt_close.wav" ]; then
-        echo "   Generating default ptt_close.wav..."
-        ffmpeg -f lavfi -i "sine=frequency=400:duration=0.1" "$SOUND_DIR/ptt_close.wav" -loglevel quiet
-    fi
-else
-    echo "   ffmpeg not found. Skipping default chirp generation."
-    echo "   (You can manually drop ptt_open.wav and ptt_close.wav into ~/.config/plasma-ptt/sounds/)"
-fi
+# 5. Install default sounds
+echo "-> Installing default audio chirps..."
+cp sounds/*.wav ~/.config/plasma-ptt/sounds/ 2>/dev/null || true
 
 # 6. Run initial setup if no config exists
 if [ ! -f ~/.config/plasma-ptt/config.json ]; then

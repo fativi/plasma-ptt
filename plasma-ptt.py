@@ -21,12 +21,18 @@ import subprocess
 import signal
 import socket
 import select
+import re
+import grp
+import getpass
 from pathlib import Path
 import evdev
 
+__version__ = "1.0.0"
+
 from PyQt6.QtWidgets import (QApplication, QSystemTrayIcon, QMenu, QDialog, 
                              QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton, 
-                             QDialogButtonBox, QMessageBox, QListWidget, QListWidgetItem)
+                             QDialogButtonBox, QMessageBox, QListWidget, QListWidgetItem,
+                             QGroupBox)
 from PyQt6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor, QPen
 from PyQt6.QtCore import QThread, pyqtSignal, QTimer, QSocketNotifier, Qt
 
@@ -69,10 +75,96 @@ class EvdevCaptureThread(QThread):
             self.error.emit(str(e))
 
 
+def create_microphone_icon(color_name):
+    """Draws a microphone icon on the fly."""
+    pixmap = QPixmap(64, 64)
+    pixmap.fill(QColor("transparent"))
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    
+    color = QColor(color_name)
+    pen = QPen(color)
+    pen.setWidth(4)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    
+    # Draw mic capsule
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(color)
+    painter.drawRoundedRect(24, 8, 16, 26, 8, 8)
+    
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.setPen(pen)
+    
+    # Draw U shape stand
+    painter.drawLine(16, 26, 16, 34)
+    painter.drawLine(48, 26, 48, 34)
+    painter.drawArc(16, 18, 32, 32, 180 * 16, 180 * 16)
+    
+    # Draw base
+    painter.drawLine(32, 50, 32, 58)
+    painter.drawLine(20, 58, 44, 58)
+    
+    # Add a slash for muted state
+    if color_name == "crimson":
+        # Create a transparent cutout behind the slash to improve legibility
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+        clear_pen = QPen(Qt.GlobalColor.transparent)
+        clear_pen.setWidth(8)
+        clear_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(clear_pen)
+        painter.drawLine(12, 12, 52, 52)
+        
+        # Draw the actual slash
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        pen.setWidth(4)
+        painter.setPen(pen)
+        painter.drawLine(12, 12, 52, 52)
+        
+    painter.end()
+    return QIcon(pixmap)
+
+
+def get_friendly_device_name(path_str):
+    device_type = None
+    path_lower = path_str.lower()
+    if 'mouse' in path_lower:
+        device_type = 'Mouse'
+    elif 'joystick' in path_lower or 'gamepad' in path_lower:
+        device_type = 'Joystick/Controller'
+    elif 'kbd' in path_lower or 'keyboard' in path_lower:
+        device_type = 'Keyboard'
+
+    try:
+        dev = evdev.InputDevice(path_str)
+        name = dev.name
+    except Exception:
+        # Fallback to cleaning up the path name
+        path = Path(path_str)
+        name = path.name
+        # e.g., usb-Sony_Interactive_Entertainment_DualSense_Wireless_Controller-event-joystick
+        if name.startswith('usb-'):
+            name = name[4:]
+        if name.startswith('pci-'):
+            name = name[4:]
+        # Remove event suffixes
+        for suffix in ['-event-joystick', '-event-mouse', '-event-kbd', '-event', '-joystick', '-mouse', '-kbd']:
+            if name.endswith(suffix):
+                name = name[:-len(suffix)]
+                break
+        name = name.replace('_', ' ')
+        name = f"{name} (Disconnected)"
+
+    if device_type:
+        return f"{name} [{device_type}]"
+    return name
+
+
 class SetupDialog(QDialog):
     def __init__(self, current_config=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Plasma PTT Setup")
+        self.setWindowIcon(create_microphone_icon("dodgerblue"))
         self.setMinimumWidth(450)
         
         self.current_config = current_config or {}
@@ -85,38 +177,91 @@ class SetupDialog(QDialog):
             })
 
         self.selected_path = None
+        self.toggle_selected_path = None
         self.button_code = None
         self.capture_thread = None
         
         layout = QVBoxLayout(self)
         
-        # Configured Devices List
-        layout.addWidget(QLabel("Configured Devices:"))
+        # --- Group 1: PTT Input Devices ---
+        input_group = QGroupBox("Push-to-Talk Input Devices")
+        input_layout = QVBoxLayout()
+        
+        input_layout.addWidget(QLabel("Currently Configured Triggers:"))
         self.devices_list = QListWidget()
         self.refresh_devices_list()
-        layout.addWidget(self.devices_list)
+        input_layout.addWidget(self.devices_list)
 
         self.remove_btn = QPushButton("Remove Selected Device")
         self.remove_btn.clicked.connect(self.remove_selected_device)
-        layout.addWidget(self.remove_btn)
+        input_layout.addWidget(self.remove_btn)
         
-        layout.addWidget(QLabel("--- Add New Device ---"))
+        add_label = QLabel("<b>Add New Trigger</b>")
+        add_label.setContentsMargins(0, 10, 0, 5)
+        input_layout.addWidget(add_label)
 
-        # Device Selection
-        layout.addWidget(QLabel("Select Input Device:"))
+        h_layout1 = QHBoxLayout()
+        h_layout1.addWidget(QLabel("Hardware Device:"))
         self.device_combo = QComboBox()
-        self.populate_devices()
         self.device_combo.currentIndexChanged.connect(self.on_device_changed)
-        layout.addWidget(self.device_combo)
-        
-        # Capture Section
-        layout.addWidget(QLabel("Push-to-Talk Button:"))
+        h_layout1.addWidget(self.device_combo, stretch=1)
+        input_layout.addLayout(h_layout1)
+
+        h_layout2 = QHBoxLayout()
+        h_layout2.addWidget(QLabel("Target Button Code:"))
         self.code_label = QLabel(f"<b>{self.button_code if self.button_code else 'None'}</b>")
-        layout.addWidget(self.code_label)
-        
+        h_layout2.addWidget(self.code_label, stretch=1)
         self.capture_btn = QPushButton("Capture Button")
         self.capture_btn.clicked.connect(self.toggle_capture)
-        layout.addWidget(self.capture_btn)
+        h_layout2.addWidget(self.capture_btn)
+        input_layout.addLayout(h_layout2)
+
+        input_group.setLayout(input_layout)
+        layout.addWidget(input_group)
+
+        # --- Group 1.5: Master Enable/Disable Toggle ---
+        toggle_group = QGroupBox("Master Enable/Disable Toggle")
+        toggle_layout = QVBoxLayout()
+        desc_label = QLabel("Set an optional global hotkey to pause Push-to-Talk and leave your microphone open:")
+        desc_label.setWordWrap(True)
+        toggle_layout.addWidget(desc_label)
+        
+        self.toggle_trigger = self.current_config.get('toggle_trigger', None)
+        self.toggle_display_label = QLabel(self._format_toggle_text())
+        toggle_layout.addWidget(self.toggle_display_label)
+
+        t_h_layout1 = QHBoxLayout()
+        t_h_layout1.addWidget(QLabel("Target Device:"))
+        self.toggle_device_combo = QComboBox()
+        self.toggle_device_combo.currentIndexChanged.connect(self.on_toggle_device_changed)
+        t_h_layout1.addWidget(self.toggle_device_combo, stretch=1)
+        toggle_layout.addLayout(t_h_layout1)
+
+        t_h_layout = QHBoxLayout()
+        self.toggle_capture_btn = QPushButton("Capture Toggle Button")
+        self.toggle_capture_btn.clicked.connect(self.start_toggle_capture)
+        t_h_layout.addWidget(self.toggle_capture_btn)
+        
+        self.toggle_clear_btn = QPushButton("Clear Toggle Button")
+        self.toggle_clear_btn.clicked.connect(self.clear_toggle_trigger)
+        t_h_layout.addWidget(self.toggle_clear_btn)
+        toggle_layout.addLayout(t_h_layout)
+        
+        toggle_group.setLayout(toggle_layout)
+        layout.addWidget(toggle_group)
+
+        # --- Group 2: Microphone Selection ---
+        mic_group = QGroupBox("Microphone Configuration")
+        mic_layout = QVBoxLayout()
+        mic_layout.addWidget(QLabel("Select the audio source to mute/unmute (falls back to system default):"))
+        self.mic_combo = QComboBox()
+        self.populate_mics()
+        mic_layout.addWidget(self.mic_combo)
+        
+        mic_group.setLayout(mic_layout)
+        layout.addWidget(mic_group)
+        
+        self.populate_devices()
         
         # Dialog Buttons
         self.button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
@@ -130,30 +275,49 @@ class SetupDialog(QDialog):
             return
             
         index_to_select = -1
+        toggle_index_to_select = -1
         
         for path in by_id_dir.iterdir():
             if not path.is_file() and not path.is_symlink():
                 continue
                 
             try:
+                # Test opening the device. If it's disconnected or not readable, it will throw an exception.
                 dev = evdev.InputDevice(str(path))
-                self.device_combo.addItem(dev.name, str(path))
-                if str(path) == self.selected_path:
-                    index_to_select = self.device_combo.count() - 1
+                friendly = get_friendly_device_name(str(path))
+                
+                if hasattr(self, 'device_combo'):
+                    self.device_combo.addItem(friendly, str(path))
+                    if str(path) == self.selected_path:
+                        index_to_select = self.device_combo.count() - 1
+                        
+                if hasattr(self, 'toggle_device_combo'):
+                    self.toggle_device_combo.addItem(friendly, str(path))
+                    if str(path) == self.toggle_selected_path:
+                        toggle_index_to_select = self.toggle_device_combo.count() - 1
             except PermissionError:
                 continue
             except Exception:
                 continue
                 
-        if index_to_select >= 0:
-            self.device_combo.setCurrentIndex(index_to_select)
-        elif self.device_combo.count() > 0:
-            self.selected_path = self.device_combo.itemData(0)
+        if hasattr(self, 'device_combo'):
+            if index_to_select >= 0:
+                self.device_combo.setCurrentIndex(index_to_select)
+            elif self.device_combo.count() > 0:
+                self.selected_path = self.device_combo.itemData(0)
+                
+        if hasattr(self, 'toggle_device_combo'):
+            if toggle_index_to_select >= 0:
+                self.toggle_device_combo.setCurrentIndex(toggle_index_to_select)
+            elif self.toggle_device_combo.count() > 0:
+                self.toggle_selected_path = self.toggle_device_combo.itemData(0)
 
     def refresh_devices_list(self):
         self.devices_list.clear()
         for i, dev in enumerate(self.devices):
-            item_text = f"Device: {dev.get('device_path')} | Button: {dev.get('button_code')}"
+            path = dev.get('device_path')
+            friendly_name = get_friendly_device_name(path)
+            item_text = f"{friendly_name} | Button: {dev.get('button_code')}"
             item = QListWidgetItem(item_text)
             item.setData(Qt.ItemDataRole.UserRole, i)
             self.devices_list.addItem(item)
@@ -168,33 +332,128 @@ class SetupDialog(QDialog):
                 del self.devices[idx]
         self.refresh_devices_list()
 
+    def populate_mics(self):
+        self.mic_combo.addItem("Default Source (System Default)", "default")
+        
+        mics = []
+        try:
+            # Try to list using pactl first
+            res = subprocess.run(['pactl', 'list', 'sources'], capture_output=True, text=True, check=True)
+            blocks = res.stdout.split('Source #')
+            for block in blocks[1:]:
+                lines = block.split('\n')
+                name = None
+                desc = None
+                for line in lines:
+                    line = line.strip()
+                    if line.startswith('Name: '):
+                        name = line[6:]
+                    elif line.startswith('Description: '):
+                        desc = line[13:]
+                if name and not name.endswith('.monitor'):
+                    mics.append((name, desc or name))
+        except Exception as e:
+            print(f"Could not list mic devices using pactl: {e}")
+            # Fall back to parsing wpctl status
+            try:
+                res = subprocess.run(['wpctl', 'status'], capture_output=True, text=True, check=True)
+                in_sources = False
+                for line in res.stdout.split('\n'):
+                    if 'Sources:' in line:
+                        in_sources = True
+                        continue
+                    if in_sources:
+                        # Stop if we leave the sources section
+                        if not line.strip() or 'Filters:' in line or 'Streams:' in line or 'Video' in line or 'Settings' in line:
+                            if line.strip() and not line.startswith(' │'):
+                                in_sources = False
+                        match = re.search(r'(\d+)\.\s+(.+?)\s*(?:\[|$)', line)
+                        if match:
+                            source_id = match.group(1)
+                            desc = match.group(2).strip()
+                            mics.append((source_id, desc))
+            except Exception as ex:
+                print(f"Could not list mic devices using wpctl: {ex}")
+
+        # Add all discovered mics
+        selected_mic = self.current_config.get('mic_device', 'default')
+        index_to_select = 0
+        
+        for name, desc in mics:
+            self.mic_combo.addItem(desc, name)
+            if name == selected_mic:
+                index_to_select = self.mic_combo.count() - 1
+                
+        self.mic_combo.setCurrentIndex(index_to_select)
+
     def on_device_changed(self, index):
         if index >= 0:
             self.selected_path = self.device_combo.itemData(index)
+
+    def on_toggle_device_changed(self, index):
+        if index >= 0:
+            self.toggle_selected_path = self.toggle_device_combo.itemData(index)
+
+    def _format_toggle_text(self):
+        if not self.toggle_trigger:
+            return "<b>None configured</b>"
+        return f"<b>{self.toggle_trigger['button_code']}</b> (on {get_friendly_device_name(self.toggle_trigger['device_path'])})"
 
     def toggle_capture(self):
         if self.capture_thread:
             self.reset_capture_ui()
             return
-
         if not self.selected_path:
             return
-            
         self.capture_btn.setText("Cancel Capture")
-        self.capture_btn.setEnabled(True)
-        self.device_combo.setEnabled(False)
-        self.button_box.setEnabled(False)
-        
+        self.capture_mode = 'ptt'
+        self.disable_ui_for_capture()
         self.capture_thread = EvdevCaptureThread(self.selected_path)
         self.capture_thread.captured.connect(self.on_captured)
         self.capture_thread.error.connect(self.on_capture_error)
         self.capture_thread.start()
 
+    def start_toggle_capture(self):
+        if self.capture_thread:
+            self.reset_capture_ui()
+            return
+        if not self.toggle_selected_path:
+            return
+        self.toggle_capture_btn.setText("Cancel Capture")
+        self.capture_mode = 'toggle'
+        self.disable_ui_for_capture()
+        self.capture_thread = EvdevCaptureThread(self.toggle_selected_path)
+        self.capture_thread.captured.connect(self.on_captured)
+        self.capture_thread.error.connect(self.on_capture_error)
+        self.capture_thread.start()
+
+    def clear_toggle_trigger(self):
+        self.toggle_trigger = None
+        self.toggle_display_label.setText(self._format_toggle_text())
+
+    def disable_ui_for_capture(self):
+        self.capture_btn.setEnabled(False)
+        if hasattr(self, 'toggle_capture_btn'):
+            self.toggle_capture_btn.setEnabled(False)
+        if getattr(self, 'capture_mode', 'ptt') == 'ptt':
+            self.capture_btn.setEnabled(True)
+        else:
+            if hasattr(self, 'toggle_capture_btn'):
+                self.toggle_capture_btn.setEnabled(True)
+        self.device_combo.setEnabled(False)
+        if hasattr(self, 'toggle_device_combo'):
+            self.toggle_device_combo.setEnabled(False)
+        self.button_box.setEnabled(False)
+
     def on_captured(self, code):
-        self.button_code = code
-        self.code_label.setText(f"<b>{code}</b>")
-        self.devices.append({'device_path': self.selected_path, 'button_code': code})
-        self.refresh_devices_list()
+        if getattr(self, 'capture_mode', 'ptt') == 'ptt':
+            self.button_code = code
+            self.code_label.setText(f"<b>{code}</b>")
+            self.devices.append({'device_path': self.selected_path, 'button_code': code})
+            self.refresh_devices_list()
+        else:
+            self.toggle_trigger = {'device_path': self.toggle_selected_path, 'button_code': code}
+            self.toggle_display_label.setText(self._format_toggle_text())
         self.reset_capture_ui()
 
     def on_capture_error(self, err_msg):
@@ -208,8 +467,13 @@ class SetupDialog(QDialog):
             self.capture_thread = None
             
         self.capture_btn.setText("Capture Button")
+        if hasattr(self, 'toggle_capture_btn'):
+            self.toggle_capture_btn.setText("Capture Toggle Button")
+            self.toggle_capture_btn.setEnabled(True)
         self.capture_btn.setEnabled(True)
         self.device_combo.setEnabled(True)
+        if hasattr(self, 'toggle_device_combo'):
+            self.toggle_device_combo.setEnabled(True)
         self.button_box.setEnabled(True)
 
     def save_and_accept(self):
@@ -219,7 +483,12 @@ class SetupDialog(QDialog):
             
         try:
             CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-            config_data = {'devices': self.devices}
+            mic_device = self.mic_combo.currentData()
+            config_data = {
+                'devices': self.devices,
+                'mic_device': mic_device,
+                'toggle_trigger': self.toggle_trigger
+            }
             with open(CONFIG_FILE, 'w') as f:
                 json.dump(config_data, f, indent=4)
                 
@@ -239,65 +508,82 @@ class SetupDialog(QDialog):
 class EvdevThread(QThread):
     pressed = pyqtSignal()
     released = pyqtSignal()
+    toggle = pyqtSignal()
 
-    def __init__(self, devices_config):
+    def __init__(self, devices_config, toggle_trigger=None):
         super().__init__()
         self.devices_config = devices_config
+        self.toggle_trigger = toggle_trigger
         self._running = True
 
     def stop(self):
         self._running = False
 
     def run(self):
-        active_devices = {}  # device_path -> (InputDevice, button_code)
+        active_devices = {}  # device_path -> InputDevice
         pressed_states = {}  # device_path -> bool
+        
+        ptt_buttons = {}
+        for dev_conf in self.devices_config:
+            path = dev_conf['device_path']
+            if path not in ptt_buttons:
+                ptt_buttons[path] = set()
+            ptt_buttons[path].add(dev_conf['button_code'])
+
+        toggle_path = self.toggle_trigger['device_path'] if self.toggle_trigger else None
+        toggle_btn = self.toggle_trigger['button_code'] if self.toggle_trigger else None
+
+        target_paths = set(ptt_buttons.keys())
+        if toggle_path:
+            target_paths.add(toggle_path)
 
         while self._running:
-            # Attempt to reconnect disconnected devices
-            for dev_conf in self.devices_config:
-                path = dev_conf['device_path']
+            for path in target_paths:
                 if path not in active_devices:
                     if Path(path).exists():
                         try:
                             device = evdev.InputDevice(path)
-                            active_devices[path] = (device, dev_conf['button_code'])
+                            active_devices[path] = device
                             pressed_states[path] = False
                             print(f"Successfully connected/reconnected device: {path}")
-                        except Exception as e:
+                        except Exception:
                             pass
 
             if not active_devices:
                 self.msleep(1000)
                 continue
 
-            fds = [dev.fd for dev, _ in active_devices.values()]
-            fd_to_path = {dev.fd: path for path, (dev, _) in active_devices.items()}
-
+            fds = {dev.fd: path for path, dev in active_devices.items()}
             try:
-                r, w, x = select.select(fds, [], [], 1.0)
+                r, w, x = select.select(list(fds.keys()), [], [], 1.0)
                 for fd in r:
-                    path = fd_to_path[fd]
-                    device, target_button = active_devices[path]
+                    path = fds[fd]
+                    device = active_devices[path]
                     try:
                         for event in device.read():
-                            if event.type == evdev.ecodes.EV_KEY and event.code == target_button:
-                                if event.value == 1:
-                                    if not pressed_states.get(path, False):
-                                        pressed_states[path] = True
-                                        self.pressed.emit()
-                                elif event.value == 0:
-                                    if pressed_states.get(path, False):
-                                        pressed_states[path] = False
-                                        self.released.emit()
+                            if event.type == evdev.ecodes.EV_KEY:
+                                # Check PTT buttons
+                                if path in ptt_buttons and event.code in ptt_buttons[path]:
+                                    if event.value == 1:
+                                        if not pressed_states.get(path, False):
+                                            pressed_states[path] = True
+                                            self.pressed.emit()
+                                    elif event.value == 0:
+                                        if pressed_states.get(path, False):
+                                            pressed_states[path] = False
+                                            self.released.emit()
+                                # Check Toggle button
+                                if path == toggle_path and event.code == toggle_btn:
+                                    if event.value == 1:
+                                        self.toggle.emit()
                     except OSError as e:
                         print(f"Device disconnected: {device.path} ({e})")
                         if pressed_states.get(path, False):
                             pressed_states[path] = False
                             self.released.emit()
                         del active_devices[path]
-            except OSError as e:
-                # If select fails due to a bad fd, we need to find and remove it
-                for path, (device, _) in list(active_devices.items()):
+            except OSError:
+                for path, device in list(active_devices.items()):
                     try:
                         select.select([device.fd], [], [], 0)
                     except OSError:
@@ -381,10 +667,17 @@ class PTTApp:
         if not devices:
             return
             
-        self.evdev_thread = EvdevThread(devices)
+        toggle_trigger = self.config.get('toggle_trigger', None)
+        self.evdev_thread = EvdevThread(devices, toggle_trigger)
         self.evdev_thread.pressed.connect(self.on_press)
         self.evdev_thread.released.connect(self.on_release)
+        self.evdev_thread.toggle.connect(self.hotkey_toggle_ptt)
         self.evdev_thread.start()
+
+    def hotkey_toggle_ptt(self):
+        current_state = self.toggle_action.isChecked()
+        self.toggle_action.setChecked(not current_state)
+        self.toggle_ptt()
 
     def stop_evdev_thread(self):
         if self.evdev_thread:
@@ -394,10 +687,28 @@ class PTTApp:
 
     def open_setup(self):
         self.stop_evdev_thread()
+        
+        # Check permissions
+        try:
+            groups = [g.gr_name for g in grp.getgrall() if getpass.getuser() in g.gr_mem]
+            current_group = grp.getgrgid(os.getgid()).gr_name
+            if 'input' not in groups and current_group != 'input':
+                QMessageBox.critical(None, "Permission Denied", 
+                    "You must be in the 'input' group to read hardware events.\n\n"
+                    "Open a terminal and run:\n"
+                    f"sudo usermod -aG input {getpass.getuser()}\n\n"
+                    "Then completely log out and log back in to apply the changes.")
+        except Exception as e:
+            print(f"Failed group check: {e}")
 
         dialog = SetupDialog(self.config)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.config = dialog.current_config
+            # Enable systemd user service after saving
+            try:
+                subprocess.run(['systemctl', '--user', 'enable', '--now', 'plasma-ptt.service'], check=False)
+            except Exception:
+                pass
 
         devices = self.config.get('devices', [])
         if not devices and self.config and 'device_path' in self.config:
@@ -410,53 +721,7 @@ class PTTApp:
             self.quit_app()
 
     def create_icon(self, color_name):
-        """Draws a microphone icon on the fly."""
-        pixmap = QPixmap(64, 64)
-        pixmap.fill(QColor("transparent"))
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        color = QColor(color_name)
-        pen = QPen(color)
-        pen.setWidth(4)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        
-        # Draw mic capsule
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(color)
-        painter.drawRoundedRect(24, 8, 16, 26, 8, 8)
-        
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(pen)
-        
-        # Draw U shape stand
-        painter.drawLine(16, 26, 16, 34)
-        painter.drawLine(48, 26, 48, 34)
-        painter.drawArc(16, 18, 32, 32, 180 * 16, 180 * 16)
-        
-        # Draw base
-        painter.drawLine(32, 50, 32, 58)
-        painter.drawLine(20, 58, 44, 58)
-        
-        # Add a slash for muted state
-        if color_name == "crimson":
-            # Create a transparent cutout behind the slash to improve legibility
-            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
-            clear_pen = QPen(Qt.GlobalColor.transparent)
-            clear_pen.setWidth(8)
-            clear_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            painter.setPen(clear_pen)
-            painter.drawLine(12, 12, 52, 52)
-            
-            # Draw the actual slash
-            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-            pen.setWidth(4)
-            painter.setPen(pen)
-            painter.drawLine(12, 12, 52, 52)
-            
-        painter.end()
-        return QIcon(pixmap)
+        return create_microphone_icon(color_name)
 
     def update_icon(self):
         if not self.ptt_enabled:
@@ -470,54 +735,45 @@ class PTTApp:
             self.tray_icon.setToolTip("Muted (PTT Ready)")
 
     def set_mic_mute(self, state):
-        subprocess.run(['wpctl', 'set-mute', '@DEFAULT_AUDIO_SOURCE@', state])
+        mic_device = self.config.get('mic_device', 'default')
+        if not mic_device or mic_device == 'default':
+            subprocess.run(['wpctl', 'set-mute', '@DEFAULT_AUDIO_SOURCE@', state])
+        else:
+            if mic_device.isdigit():
+                subprocess.run(['wpctl', 'set-mute', mic_device, state])
+            else:
+                subprocess.run(['pactl', 'set-source-mute', mic_device, state])
+
+    def _get_sound_path(self, filename):
+        """Helper to find custom sound or fallback to system installed sound."""
+        user_sound = CONFIG_DIR / 'sounds' / filename
+        system_sound = Path('/usr/share/plasma-ptt/sounds') / filename
+        if user_sound.exists():
+            return user_sound
+        elif system_sound.exists():
+            return system_sound
+        return None
 
     def play_toggle_sound(self, ptt_is_active):
-        """Plays a native system sound, falling back through standard KDE/Linux themes."""
-        if ptt_is_active:
-            # Ascending tone when PTT is ready
-            options = [
-                '/usr/share/sounds/ocean/stereo/device-added.oga',
-                '/usr/share/sounds/freedesktop/stereo/device-added.oga',
-                '/usr/share/sounds/oxygen/stereo/device-added.ogg'
-            ]
+        """Plays the custom ascending/descending toggle sounds."""
+        filename = 'ptt_enabled.wav' if ptt_is_active else 'ptt_disabled.wav'
+        sound_to_play = self._get_sound_path(filename)
+            
+        if sound_to_play:
+            subprocess.Popen(
+                ['pw-play', str(sound_to_play)], 
+                stdout=subprocess.DEVNULL, 
+                stderr=subprocess.DEVNULL
+            )
         else:
-            # Descending tone when PTT is disabled (mic open)
-            options = [
-                '/usr/share/sounds/ocean/stereo/device-removed.oga',
-                '/usr/share/sounds/freedesktop/stereo/device-removed.oga',
-                '/usr/share/sounds/oxygen/stereo/device-removed.ogg'
-            ]
-            
-        # Find the first sound file that actually exists on the system
-        sound_to_play = None
-        for snd in options:
-            if Path(snd).exists():
-                sound_to_play = snd
-                break
-                
-        if not sound_to_play:
-            print("Warning: Could not find sound files in Ocean, Freedesktop, or Oxygen themes.")
-            return
-            
-        # Fire and forget in the background
-        subprocess.Popen(
-            ['pw-play', sound_to_play], 
-            stdout=subprocess.DEVNULL, 
-            stderr=subprocess.DEVNULL
-        )
+            print(f"Warning: Could not find toggle sound {filename}")
 
     def play_ptt_chirp(self, is_opening):
         """Plays a short, custom walkie-talkie chirp from the config folder."""
-        sound_dir = CONFIG_DIR / 'sounds'
+        filename = 'ptt_open.wav' if is_opening else 'ptt_close.wav'
+        sound_file = self._get_sound_path(filename)
 
-        if is_opening:
-            sound_file = sound_dir / 'ptt_open.wav'
-        else:
-            sound_file = sound_dir / 'ptt_close.wav'
-
-        # It only attempts to play if you actually placed the files there
-        if sound_file.exists():
+        if sound_file:
             subprocess.Popen(
                 ['pw-play', str(sound_file)],
                 stdout=subprocess.DEVNULL,
