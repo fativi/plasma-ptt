@@ -9,7 +9,7 @@ jobs:
   build-deb:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Build DEB package
         run: |
@@ -17,7 +17,7 @@ jobs:
           ./build_deb.sh
       
       - name: Upload DEB to Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: plasma-ptt*.deb
@@ -27,7 +27,7 @@ jobs:
     container:
       image: fedora:latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install RPM Build Tools
         run: dnf install -y rpm-build make
@@ -50,7 +50,7 @@ jobs:
           cp ~/rpmbuild/RPMS/noarch/plasma-ptt-*.rpm .
 
       - name: Upload RPM to Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: plasma-ptt*.rpm
