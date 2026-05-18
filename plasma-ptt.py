@@ -27,7 +27,7 @@ import getpass
 from pathlib import Path
 import evdev
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 from PyQt6.QtWidgets import (QApplication, QSystemTrayIcon, QMenu, QDialog, 
                              QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton, 
@@ -706,9 +706,12 @@ class PTTApp:
             self.config = dialog.current_config
             # Enable systemd user service after saving
             try:
-                subprocess.run(['systemctl', '--user', 'enable', '--now', 'plasma-ptt.service'], check=False)
-            except Exception:
-                pass
+                subprocess.run(['systemctl', '--user', 'daemon-reload'], check=False)
+                res = subprocess.run(['systemctl', '--user', 'enable', '--now', 'plasma-ptt.service'], capture_output=True, text=True)
+                if res.returncode != 0:
+                    print(f"Failed to enable systemd service: {res.stderr}")
+            except Exception as e:
+                print(f"Exception starting service: {e}")
 
         devices = self.config.get('devices', [])
         if not devices and self.config and 'device_path' in self.config:
@@ -850,9 +853,31 @@ if __name__ == '__main__':
     needs_setup = not config or not has_configured_device(config)
 
     if setup_requested or needs_setup:
+        # Check permissions
+        try:
+            groups = [g.gr_name for g in grp.getgrall() if getpass.getuser() in g.gr_mem]
+            current_group = grp.getgrgid(os.getgid()).gr_name
+            if 'input' not in groups and current_group != 'input':
+                QMessageBox.critical(None, "Permission Denied", 
+                    "You must be in the 'input' group to read hardware events.\n\n"
+                    "Open a terminal and run:\n"
+                    f"sudo usermod -aG input {getpass.getuser()}\n\n"
+                    "Then completely log out and log back in to apply the changes.")
+        except Exception as e:
+            print(f"Failed group check: {e}")
+
         dialog = SetupDialog(config)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             config = dialog.current_config
+            # Enable systemd user service after saving
+            try:
+                subprocess.run(['systemctl', '--user', 'daemon-reload'], check=False)
+                res = subprocess.run(['systemctl', '--user', 'enable', '--now', 'plasma-ptt.service'], capture_output=True, text=True)
+                if res.returncode != 0:
+                    print(f"Failed to enable systemd service: {res.stderr}")
+            except Exception as e:
+                print(f"Exception starting service: {e}")
+
             if setup_requested:
                 sys.exit(0)
         else:
