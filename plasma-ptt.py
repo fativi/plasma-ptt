@@ -27,7 +27,7 @@ import getpass
 from pathlib import Path
 import evdev
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 from PyQt6.QtWidgets import (QApplication, QSystemTrayIcon, QMenu, QDialog, 
                              QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton, 
