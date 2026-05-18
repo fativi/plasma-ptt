@@ -5,7 +5,11 @@ A lightweight, Wayland-compatible Push-to-Talk background daemon designed for KD
 Instead of relying on window focus or Wayland-restricted keyloggers, this tool reads raw hardware events directly from `/dev/input/` to provide flawless, system-wide microphone muting and unmuting. It includes a native PyQt6 system tray icon for visual feedback and supports custom audio chirps.
 
 ## ✨ Features
-* **Wayland & X11 Compatible:** Intercepts mouse events at the hardware level using `evdev`.
+* **Wayland & X11 Compatible:** Intercepts hardware events directly using `evdev` (supporting mice, keyboards, controllers, and joysticks).
+* **Multi-Device Support:** Configure multiple input devices simultaneously to trigger your Push-to-Talk signal.
+* **Smart Hotplugging:** Configured USB/wireless devices (such as DualSense controllers) automatically reconnect when plugged in or turned on.
+* **Stuck-State Prevention:** Automatically detects disconnected devices and cleanly releases any active PTT signals.
+* **Smart Mic Overlap:** Keeps the microphone open as long as at least one configured PTT button is being held down.
 * **Native PipeWire Integration:** Uses `wpctl` to mute/unmute the default audio source instantly.
 * **System Tray Indicator:** A dynamic PyQt6 tray icon showing your current microphone state.
 * **Global Hotkey Support:** Toggle the PTT requirement on/off mid-game using UNIX signals.
@@ -14,7 +18,7 @@ Instead of relying on window focus or Wayland-restricted keyloggers, this tool r
 
 ## 📦 Installation
 
-ttttt the repository and run the included installation script. The script automatically detects your package manager (Arch/pacman, Debian/apt, or Fedora/dnf) to install the necessary Python dependencies.
+Clone the repository and run the included installation script. The script automatically detects your package manager (Arch/pacman, Debian/apt, or Fedora/dnf) to install the necessary Python dependencies.
 
 ```bash
 git clone https://github.com/fativi/plasma-ptt.git
@@ -23,13 +27,17 @@ chmod +x install.sh
 ./install.sh
 ```
 
-Note: The installer adds your user to the input group so the script can read mouse events without root privileges. If this is your first time being added to that group, you must completely log out of your desktop environment and log back in for the changes to take effect.
+Note: The installer adds your user to the input group so the script can read hardware events without root privileges. If this is your first time being added to that group, you must completely log out of your desktop environment and log back in for the changes to take effect.
 
 ⚙️ Configuration
 
-The installer will automatically launch a GUI configuration dialog prompting you to select your device and press the button you want to map to Push-to-Talk.
+The installer will automatically launch a GUI configuration dialog where you can manage your list of Push-to-Talk devices.
 
-If you ever change your mouse or want to remap the button, you can rerun the configuration prompt at any time:
+* **Add Devices:** Select an input device from the dropdown, click **Capture Button**, and press the key/button you want to map. The device will be added to the list.
+* **Remove Devices:** Highlight a device in the list and click **Remove Selected Device**.
+* **Hotplugging:** You can configure wireless devices (like joysticks or DualSense controllers). If they are unplugged or turned off, the daemon remains active and waits for them to reconnect.
+
+To configure your bindings:
 
 * Right-click the microphone system tray icon and select **Setup**.
 * OR, open your application launcher (e.g., Plasma Kickoff), search for **Push-to-Talk Setup** and launch it.

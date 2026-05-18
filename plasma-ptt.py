@@ -249,38 +249,63 @@ class EvdevThread(QThread):
         self._running = False
 
     def run(self):
-        active_devices = {}
-        for dev_conf in self.devices_config:
-            try:
-                device = evdev.InputDevice(dev_conf['device_path'])
-                active_devices[device.fd] = (device, dev_conf['button_code'])
-            except Exception as e:
-                print(f"Input device disconnected or error opening {dev_conf.get('device_path')}: {e}")
+        active_devices = {}  # device_path -> (InputDevice, button_code)
+        pressed_states = {}  # device_path -> bool
 
-        while self._running and active_devices:
-            fds = list(active_devices.keys())
+        while self._running:
+            # Attempt to reconnect disconnected devices
+            for dev_conf in self.devices_config:
+                path = dev_conf['device_path']
+                if path not in active_devices:
+                    if Path(path).exists():
+                        try:
+                            device = evdev.InputDevice(path)
+                            active_devices[path] = (device, dev_conf['button_code'])
+                            pressed_states[path] = False
+                            print(f"Successfully connected/reconnected device: {path}")
+                        except Exception as e:
+                            pass
+
+            if not active_devices:
+                self.msleep(1000)
+                continue
+
+            fds = [dev.fd for dev, _ in active_devices.values()]
+            fd_to_path = {dev.fd: path for path, (dev, _) in active_devices.items()}
+
             try:
-                r, w, x = select.select(fds, [], [], 0.5)
+                r, w, x = select.select(fds, [], [], 1.0)
                 for fd in r:
-                    device, target_button = active_devices[fd]
+                    path = fd_to_path[fd]
+                    device, target_button = active_devices[path]
                     try:
                         for event in device.read():
                             if event.type == evdev.ecodes.EV_KEY and event.code == target_button:
                                 if event.value == 1:
-                                    self.pressed.emit()
+                                    if not pressed_states.get(path, False):
+                                        pressed_states[path] = True
+                                        self.pressed.emit()
                                 elif event.value == 0:
-                                    self.released.emit()
+                                    if pressed_states.get(path, False):
+                                        pressed_states[path] = False
+                                        self.released.emit()
                     except OSError as e:
                         print(f"Device disconnected: {device.path} ({e})")
-                        del active_devices[fd]
+                        if pressed_states.get(path, False):
+                            pressed_states[path] = False
+                            self.released.emit()
+                        del active_devices[path]
             except OSError as e:
                 # If select fails due to a bad fd, we need to find and remove it
-                for fd in list(active_devices.keys()):
+                for path, (device, _) in list(active_devices.items()):
                     try:
-                        select.select([fd], [], [], 0)
+                        select.select([device.fd], [], [], 0)
                     except OSError:
-                        print(f"Removing disconnected device fd: {fd}")
-                        del active_devices[fd]
+                        print(f"Removing disconnected device: {path}")
+                        if pressed_states.get(path, False):
+                            pressed_states[path] = False
+                            self.released.emit()
+                        del active_devices[path]
 
 
 # --- main application ---
@@ -378,11 +403,10 @@ class PTTApp:
         if not devices and self.config and 'device_path' in self.config:
             devices = [{'device_path': self.config['device_path']}]
 
-        valid_devices = [d for d in devices if Path(d.get('device_path', '')).exists()]
-        if valid_devices:
+        if devices:
             self.start_evdev_thread()
         else:
-            print("No valid config found after setup, exiting...")
+            print("No devices configured, exiting...")
             self.quit_app()
 
     def create_icon(self, color_name):
@@ -560,14 +584,14 @@ if __name__ == '__main__':
     
     setup_requested = (len(sys.argv) > 1 and sys.argv[1] == '--setup')
     
-    def has_valid_device(cfg):
+    def has_configured_device(cfg):
         if not cfg: return False
         devs = cfg.get('devices', [])
         if not devs and 'device_path' in cfg:
             devs = [{'device_path': cfg['device_path']}]
-        return any(Path(d.get('device_path', '')).exists() for d in devs)
+        return len(devs) > 0
 
-    needs_setup = not config or not has_valid_device(config)
+    needs_setup = not config or not has_configured_device(config)
 
     if setup_requested or needs_setup:
         dialog = SetupDialog(config)
@@ -582,7 +606,7 @@ if __name__ == '__main__':
             if setup_requested:
                 sys.exit(0)
 
-    if not config or not has_valid_device(config):
+    if not config or not has_configured_device(config):
         sys.exit(1)
 
     ptt_app = PTTApp(app, config)
