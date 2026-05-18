@@ -36,7 +36,7 @@ env/
 
 # Project Specific (In case of local testing)
 config.json
-sounds/*.wav
+# sounds/*.wav
 sounds/*.ogg
 sounds/*.flac
 

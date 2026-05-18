@@ -42,7 +42,7 @@ jobs:
           sed -i "s/Version:.*/Version:        $VERSION/" ~/rpmbuild/SPECS/plasma-ptt.spec
           
           # Create source tarball
-          tar --exclude='.git' --exclude='.github' -czf ~/rpmbuild/SOURCES/plasma-ptt-1.0.tar.gz -C .. $(basename $PWD)
+          tar --exclude='.git' --exclude='.github' -czf ~/rpmbuild/SOURCES/plasma-ptt-${VERSION}.tar.gz -C .. $(basename $PWD)
           
           rpmbuild -ba ~/rpmbuild/SPECS/plasma-ptt.spec
           
