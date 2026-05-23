@@ -526,12 +526,25 @@ class EvdevThread(QThread):
         ptt_buttons = {}
         for dev_conf in self.devices_config:
             path = dev_conf['device_path']
+            # Resolve symlinks to avoid treating the same physical device as two
+            # separate sources (e.g. composite USB devices with multiple by-id links).
+            try:
+                path = str(Path(path).resolve())
+            except OSError:
+                pass
             if path not in ptt_buttons:
                 ptt_buttons[path] = set()
             ptt_buttons[path].add(dev_conf['button_code'])
 
-        toggle_path = self.toggle_trigger['device_path'] if self.toggle_trigger else None
-        toggle_btn = self.toggle_trigger['button_code'] if self.toggle_trigger else None
+        toggle_path = None
+        toggle_btn = None
+        if self.toggle_trigger:
+            toggle_path = self.toggle_trigger['device_path']
+            try:
+                toggle_path = str(Path(toggle_path).resolve())
+            except OSError:
+                pass
+            toggle_btn = self.toggle_trigger['button_code']
 
         target_paths = set(ptt_buttons.keys())
         if toggle_path:
@@ -675,8 +688,9 @@ class PTTApp:
         self.evdev_thread.start()
 
     def hotkey_toggle_ptt(self):
-        current_state = self.toggle_action.isChecked()
-        self.toggle_action.setChecked(not current_state)
+        self.toggle_action.blockSignals(True)
+        self.toggle_action.setChecked(not self.toggle_action.isChecked())
+        self.toggle_action.blockSignals(False)
         self.toggle_ptt()
 
     def stop_evdev_thread(self):
@@ -786,6 +800,9 @@ class PTTApp:
     def toggle_ptt(self):
         self.ptt_enabled = self.toggle_action.isChecked()
         if not self.ptt_enabled:
+            # Reset press tracking so a held button doesn't orphan the count.
+            self.pressed_count = 0
+            self.is_transmitting = False
             self.set_mic_mute('0') # Unmute
         else:
             self.set_mic_mute('1') # Mute
