@@ -617,6 +617,13 @@ class PTTApp:
         self.is_transmitting = False
         self.pressed_count = 0
 
+        # Pre-render tray icons so press/release doesn't allocate on every transition
+        self._icon_cache = {
+            'crimson': create_microphone_icon('crimson'),
+            'limegreen': create_microphone_icon('limegreen'),
+            'dodgerblue': create_microphone_icon('dodgerblue'),
+        }
+
         # Setup Tray Icon
         self.tray_icon = QSystemTrayIcon()
         self.update_icon()
@@ -682,9 +689,9 @@ class PTTApp:
             
         toggle_trigger = self.config.get('toggle_trigger', None)
         self.evdev_thread = EvdevThread(devices, toggle_trigger)
-        self.evdev_thread.pressed.connect(self.on_press)
-        self.evdev_thread.released.connect(self.on_release)
-        self.evdev_thread.toggle.connect(self.hotkey_toggle_ptt)
+        self.evdev_thread.pressed.connect(self.on_press, Qt.ConnectionType.QueuedConnection)
+        self.evdev_thread.released.connect(self.on_release, Qt.ConnectionType.QueuedConnection)
+        self.evdev_thread.toggle.connect(self.hotkey_toggle_ptt, Qt.ConnectionType.QueuedConnection)
         self.evdev_thread.start()
 
     def hotkey_toggle_ptt(self):
@@ -742,24 +749,36 @@ class PTTApp:
 
     def update_icon(self):
         if not self.ptt_enabled:
-            self.tray_icon.setIcon(self.create_icon("dodgerblue"))
+            self.tray_icon.setIcon(self._icon_cache['dodgerblue'])
             self.tray_icon.setToolTip("Mic Open (PTT Disabled)")
         elif self.is_transmitting:
-            self.tray_icon.setIcon(self.create_icon("limegreen"))
+            self.tray_icon.setIcon(self._icon_cache['limegreen'])
             self.tray_icon.setToolTip("Transmitting")
         else:
-            self.tray_icon.setIcon(self.create_icon("crimson"))
+            self.tray_icon.setIcon(self._icon_cache['crimson'])
             self.tray_icon.setToolTip("Muted (PTT Ready)")
 
     def set_mic_mute(self, state):
         mic_device = self.config.get('mic_device', 'default')
         if not mic_device or mic_device == 'default':
-            subprocess.run(['wpctl', 'set-mute', '@DEFAULT_AUDIO_SOURCE@', state])
+            subprocess.Popen(
+                ['wpctl', 'set-mute', '@DEFAULT_AUDIO_SOURCE@', state],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
         else:
             if mic_device.isdigit():
-                subprocess.run(['wpctl', 'set-mute', mic_device, state])
+                subprocess.Popen(
+                    ['wpctl', 'set-mute', mic_device, state],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
             else:
-                subprocess.run(['pactl', 'set-source-mute', mic_device, state])
+                subprocess.Popen(
+                    ['pactl', 'set-source-mute', mic_device, state],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
 
     def _get_sound_path(self, filename):
         """Helper to find custom sound or fallback to system installed sound."""
