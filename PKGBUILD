@@ -1,5 +1,5 @@
 pkgname=plasma-ptt-git
-pkgver=r1
+pkgver=r16.f6f0eb2
 pkgrel=1
 pkgdesc="A Wayland-compatible Push-to-Talk background daemon designed for KDE Plasma and PipeWire."
 arch=('any')

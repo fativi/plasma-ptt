@@ -40,6 +40,13 @@ config.json
 sounds/*.ogg
 sounds/*.flac
 
+# makepkg build output
+src/
+pkg/
+plasma-ptt-git/
+*.pkg.tar.zst
+*.pkg.tar.xz
+
 # OS Generated
 .DS_Store
 .DS_Store?
